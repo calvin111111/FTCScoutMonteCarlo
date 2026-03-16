@@ -13,6 +13,13 @@ import time
 import hashlib
 import requests
 
+from kalman_opr import (
+    extract_alliance_breakdown,
+    compute_kalman_opr,
+    KalmanState,
+)
+import game_config as gc
+
 GRAPHQL_ENDPOINT = "https://api.ftcscout.org/graphql"
 REST_ENDPOINT = "https://api.ftcscout.org/rest/v1"
 
@@ -292,6 +299,92 @@ class FTCScoutAPI:
                 result[team_num] = max(math.sqrt(variance), 5.0)
 
         return result
+
+    def compute_kalman_opr_for_teams(
+        self,
+        team_numbers: list[int],
+        season: int,
+        min_matches: int = 1,
+    ) -> dict[int, dict[str, KalmanState]]:
+        """Fetch per-match category scores and compute Kalman OPR for all teams.
+
+        For each team this method:
+          1. Fetches all season matches via get_team_matches().
+          2. Extracts per-category score breakdowns (leave, classified, overflow,
+             pattern, depot, base, fouls) from the match scores object.
+          3. Identifies the partner team and stores the data for the Kalman pass.
+          4. Runs the multi-pass Kalman filter (see kalman_opr.py).
+
+        Penalties are tracked via the 'fouls_committed' category: each team's
+        expected foul contribution is modelled separately and applied to the
+        opposing alliance during simulation (see simulation.py).
+
+        Args:
+            team_numbers: List of team numbers to process.
+            season: FTC season year (2025 for DECODE).
+            min_matches: Minimum played matches to include a team in the filter.
+                         Teams below this threshold start from the prior only.
+
+        Returns:
+            {team_num: {category: KalmanState(mean, variance, match_count)}}
+        """
+        team_processed: dict[int, list[dict]] = {}
+
+        for team_num in team_numbers:
+            matches = self.get_team_matches(team_num, season=season)
+            records = []
+
+            for match in matches:
+                if not match.get("hasBeenPlayed", False):
+                    continue
+
+                teams = match.get("teams", [])
+
+                # Identify this team's alliance and partner
+                my_alliance = None
+                partner_num = None
+                for t in teams:
+                    if t.get("teamNumber") == team_num:
+                        my_alliance = t.get("alliance")
+                        break
+                if my_alliance is None:
+                    continue
+                for t in teams:
+                    if t.get("teamNumber") != team_num \
+                            and t.get("alliance") == my_alliance:
+                        partner_num = t.get("teamNumber")
+                        break
+                if partner_num is None:
+                    continue
+
+                # Extract per-category score breakdown
+                scores_obj = match.get("scores") or {}
+                breakdown = extract_alliance_breakdown(scores_obj, my_alliance)
+                if breakdown is None:
+                    # Fallback: try to at least get totalPoints so the match
+                    # isn't silently dropped; breakdown will be all zeros.
+                    breakdown = {cat: 0.0 for cat in gc.CATEGORIES}
+                    breakdown.update({
+                        "_auto_pts": 0.0, "_endgame_pts": 0.0,
+                        "_movement_rp": False, "_goal_rp": False,
+                        "_pattern_rp": False, "_pre_foul_total": 0.0,
+                        "_total_points": 0.0,
+                    })
+
+                records.append({
+                    "_breakdown":   breakdown,
+                    "_partner_num": partner_num,
+                    "_sort_key":    match.get("matchNum", 0),
+                })
+
+            if len(records) >= min_matches:
+                team_processed[team_num] = records
+            else:
+                # Not enough data — include with empty records so the team
+                # still gets prior-based states in the output dict.
+                team_processed[team_num] = []
+
+        return compute_kalman_opr(team_processed)
 
     def get_event_schedule_and_stats(self, season: int, event_code: str):
         """Convenience: fetch matches + team stats for an event.
