@@ -300,6 +300,46 @@ class FTCScoutAPI:
 
         return result
 
+    def _fetch_event_matches_for_teams(
+        self,
+        team_numbers: list[int],
+        season: int,
+    ) -> dict[str, list[dict]]:
+        """Fetch event matches (with score breakdowns) for all events the teams played.
+
+        The REST endpoint /teams/:number/matches returns TeamMatchParticipation
+        which does NOT include score breakdowns.  The /events/:season/:code/matches
+        endpoint returns full Match objects WITH scores.  This method discovers
+        each team's events, then fetches (and caches) the full match data.
+
+        Returns:
+            {event_code: [match_dict, ...]}  — full match data with scores.
+        """
+        # Step 1: discover all events these teams have participated in
+        event_codes: set[str] = set()
+        for team_num in team_numbers:
+            try:
+                events = self.get_team_events(team_num, season)
+                for ev in events:
+                    code = ev.get("eventCode") or ev.get("code")
+                    if code:
+                        event_codes.add(code)
+            except Exception as e:
+                print(f"  Warning: could not fetch events for team {team_num}: {e}")
+
+        # Step 2: fetch full match data (with scores) for each event
+        event_matches: dict[str, list[dict]] = {}
+        for code in sorted(event_codes):
+            try:
+                matches = self.get_event_matches(season, code)
+                event_matches[code] = matches
+            except Exception as e:
+                print(f"  Warning: could not fetch matches for event {code}: {e}")
+
+        print(f"  Fetched match data from {len(event_matches)} events "
+              f"({sum(len(m) for m in event_matches.values())} total matches).")
+        return event_matches
+
     def compute_kalman_opr_for_teams(
         self,
         team_numbers: list[int],
@@ -309,15 +349,11 @@ class FTCScoutAPI:
         """Fetch per-match category scores and compute Kalman OPR for all teams.
 
         For each team this method:
-          1. Fetches all season matches via get_team_matches().
-          2. Extracts per-category score breakdowns (leave, classified, overflow,
-             pattern, depot, base, fouls) from the match scores object.
-          3. Identifies the partner team and stores the data for the Kalman pass.
+          1. Discovers all events played via get_team_events().
+          2. Fetches full match data (with score breakdowns) via get_event_matches(),
+             since the /teams/:number/matches endpoint does NOT include scores.
+          3. Extracts per-category score breakdowns and identifies partners.
           4. Runs the multi-pass Kalman filter (see kalman_opr.py).
-
-        Penalties are tracked via the 'fouls_committed' category: each team's
-        expected foul contribution is modelled separately and applied to the
-        opposing alliance during simulation (see simulation.py).
 
         Args:
             team_numbers: List of team numbers to process.
@@ -328,60 +364,76 @@ class FTCScoutAPI:
         Returns:
             {team_num: {category: KalmanState(mean, variance, match_count)}}
         """
-        team_processed: dict[int, list[dict]] = {}
+        # Fetch event matches with full score breakdowns
+        event_matches = self._fetch_event_matches_for_teams(team_numbers, season)
 
-        for team_num in team_numbers:
-            matches = self.get_team_matches(team_num, season=season)
-            records = []
+        # Flatten all matches across events, building a lookup
+        team_set = set(team_numbers)
+        team_processed: dict[int, list[dict]] = {t: [] for t in team_numbers}
+        seen_match_ids: dict[int, set] = {t: set() for t in team_numbers}
 
+        breakdown_ok = 0
+        breakdown_fail = 0
+
+        for event_code, matches in event_matches.items():
             for match in matches:
                 if not match.get("hasBeenPlayed", False):
                     continue
 
                 teams = match.get("teams", [])
-
-                # Identify this team's alliance and partner
-                my_alliance = None
-                partner_num = None
-                for t in teams:
-                    if t.get("teamNumber") == team_num:
-                        my_alliance = t.get("alliance")
-                        break
-                if my_alliance is None:
-                    continue
-                for t in teams:
-                    if t.get("teamNumber") != team_num \
-                            and t.get("alliance") == my_alliance:
-                        partner_num = t.get("teamNumber")
-                        break
-                if partner_num is None:
-                    continue
-
-                # Extract per-category score breakdown
                 scores_obj = match.get("scores") or {}
-                breakdown = extract_alliance_breakdown(scores_obj, my_alliance)
-                if breakdown is None:
-                    # Fallback: try to at least get totalPoints so the match
-                    # isn't silently dropped; breakdown will be all zeros.
-                    breakdown = {cat: 0.0 for cat in gc.CATEGORIES}
-                    breakdown.update({
-                        "_auto_pts": 0.0, "_endgame_pts": 0.0,
-                        "_movement_rp": False, "_goal_rp": False,
-                        "_pattern_rp": False, "_pre_foul_total": 0.0,
-                        "_total_points": 0.0,
+                match_id = match.get("matchId") or match.get("id") or id(match)
+                match_num = match.get("matchNum", 0)
+
+                # Process each team in this match that is in our target set
+                for team_entry in teams:
+                    team_num = team_entry.get("teamNumber")
+                    if team_num not in team_set:
+                        continue
+                    # Avoid duplicate matches (same match from different events)
+                    if match_id in seen_match_ids[team_num]:
+                        continue
+                    seen_match_ids[team_num].add(match_id)
+
+                    my_alliance = team_entry.get("alliance")
+                    if not my_alliance:
+                        continue
+
+                    # Find partner
+                    partner_num = None
+                    for t in teams:
+                        if t.get("teamNumber") != team_num \
+                                and t.get("alliance") == my_alliance:
+                            partner_num = t.get("teamNumber")
+                            break
+                    if partner_num is None:
+                        continue
+
+                    # Extract per-category score breakdown
+                    breakdown = extract_alliance_breakdown(scores_obj, my_alliance)
+                    if breakdown is not None:
+                        breakdown_ok += 1
+                    else:
+                        breakdown_fail += 1
+                        breakdown = {cat: 0.0 for cat in gc.CATEGORIES}
+                        breakdown.update({
+                            "_auto_pts": 0.0, "_endgame_pts": 0.0,
+                            "_movement_rp": False, "_goal_rp": False,
+                            "_pattern_rp": False, "_pre_foul_total": 0.0,
+                            "_total_points": 0.0,
+                        })
+
+                    team_processed[team_num].append({
+                        "_breakdown":   breakdown,
+                        "_partner_num": partner_num,
+                        "_sort_key":    match_num,
                     })
 
-                records.append({
-                    "_breakdown":   breakdown,
-                    "_partner_num": partner_num,
-                    "_sort_key":    match.get("matchNum", 0),
-                })
+        print(f"  Score breakdowns: {breakdown_ok} OK, {breakdown_fail} failed.")
 
-            if len(records) >= min_matches:
-                team_processed[team_num] = records
-            else:
-                # Not enough data — include with empty records so the team
-                # still gets prior-based states in the output dict.
+        # Enforce min_matches
+        for team_num in team_numbers:
+            if len(team_processed[team_num]) < min_matches:
                 team_processed[team_num] = []
 
         prior_mean, prior_var, meas_noise, process_noise = \
