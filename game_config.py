@@ -118,3 +118,18 @@ KALMAN_MEASUREMENT_NOISE: dict[str, float] = {
 
 # Number of Kalman convergence passes (3 is typically sufficient)
 KALMAN_PASSES = 3
+
+# ---------------------------------------------------------------------------
+# Empirical tuning constants — set by tune_kalman.py from past-season data
+# ---------------------------------------------------------------------------
+# Re-run  python tune_kalman.py  after any season to refresh these values.
+#
+# KALMAN_TUNED_R_RATIO       — final R per category = ratio × var(pass-2 residuals).
+#                              Values < 1 trust the filter more; > 1 add more noise.
+# KALMAN_TUNED_Q_FRACTION    — process noise per match = fraction × R_cat.
+#                              0 = fully stable robot; higher = adapts to improvement.
+# KALMAN_TUNED_PRIOR_VAR_FACTOR — initial prior_var = factor × R.
+#                              Must be >> 1 so the first few matches dominate quickly.
+KALMAN_TUNED_R_RATIO: float         = 1.0
+KALMAN_TUNED_Q_FRACTION: float      = 0.1
+KALMAN_TUNED_PRIOR_VAR_FACTOR: float = 10.0

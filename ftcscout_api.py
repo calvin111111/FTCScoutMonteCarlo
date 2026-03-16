@@ -384,20 +384,20 @@ class FTCScoutAPI:
                 # still gets prior-based states in the output dict.
                 team_processed[team_num] = []
 
-        prior_mean, prior_var, meas_noise = self._calibrate_kalman_params(
-            team_processed
-        )
+        prior_mean, prior_var, meas_noise, process_noise = \
+            self._calibrate_kalman_params(team_processed)
         return compute_kalman_opr(
             team_processed,
             prior_mean=prior_mean,
             prior_var=prior_var,
             measurement_noise=meas_noise,
+            process_noise=process_noise,
         )
 
     def _calibrate_kalman_params(
         self,
         team_processed: dict[int, list[dict]],
-    ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
         """Two-pass empirical calibration of Kalman prior means and measurement noise R.
 
         Pass 1 (rough):
@@ -438,6 +438,7 @@ class FTCScoutAPI:
                 gc.KALMAN_PRIOR_MEAN.copy(),
                 gc.KALMAN_PRIOR_VAR.copy(),
                 gc.KALMAN_MEASUREMENT_NOISE.copy(),
+                gc.KALMAN_PROCESS_NOISE.copy(),
             )
 
         rough_prior_mean: dict[str, float] = {}
@@ -490,13 +491,21 @@ class FTCScoutAPI:
             if len(res) >= 10:
                 mu  = sum(res) / len(res)
                 var = sum((x - mu) ** 2 for x in res) / len(res)
-                final_R[cat] = max(var, 0.25)
+                # Scale by the empirically-tuned ratio (default 1.0 → no change)
+                final_R[cat] = max(gc.KALMAN_TUNED_R_RATIO * var, 0.25)
             else:
                 final_R[cat] = rough_R[cat]
 
-        # prior_var must stay large relative to final R for fast adaptation
+        # prior_var: keep large enough for fast adaptation (tuned factor, ≥ PRIOR_VAR)
         final_prior_var = {
-            cat: max(gc.KALMAN_PRIOR_VAR[cat], 10.0 * final_R[cat])
+            cat: max(gc.KALMAN_PRIOR_VAR[cat],
+                     gc.KALMAN_TUNED_PRIOR_VAR_FACTOR * final_R[cat])
+            for cat in gc.CATEGORIES
+        }
+
+        # Process noise Q per category (fraction of R, scaled by tuned constant)
+        process_noise_tuned = {
+            cat: gc.KALMAN_TUNED_Q_FRACTION * final_R[cat]
             for cat in gc.CATEGORIES
         }
 
@@ -516,8 +525,9 @@ class FTCScoutAPI:
         # TeamStats.cat_std (used by the Monte Carlo simulator) draws on the
         # empirical values rather than the hardcoded game_config defaults.
         gc.KALMAN_MEASUREMENT_NOISE.update(final_R)
+        gc.KALMAN_PROCESS_NOISE.update(process_noise_tuned)
 
-        return rough_prior_mean, final_prior_var, final_R
+        return rough_prior_mean, final_prior_var, final_R, process_noise_tuned
 
     def get_event_schedule_and_stats(self, season: int, event_code: str):
         """Convenience: fetch matches + team stats for an event.
