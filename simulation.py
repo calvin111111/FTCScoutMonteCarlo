@@ -4,12 +4,13 @@ Monte Carlo simulation engine for FTC DECODE 2025-2026 match prediction.
 Given per-category Kalman OPR statistics and a match schedule, simulates many
 possible outcomes to estimate:
   - Win/loss/tie probabilities for each match
-  - Expected scores (with penalties correctly applied to the opposing alliance)
+  - Expected scores (penalties included as additive foul_pts_received, matching
+    how scores are reported in FTC matches)
   - Final ranking distributions including bonus RP (movementRP, goalRP, patternRP)
 
 Each category is sampled from N(kalman_mean, predictive_std) per team. Alliance
-scores are the sum of each team's category samples. Penalty points (fouls_committed)
-committed by alliance A are added to alliance B's score, not alliance A's.
+scores are the sum of each team's category samples, including foul_pts_received
+(the foul points awarded to this alliance from opponent infractions).
 
 Bonus RP logic (DECODE 2025-2026):
   - movementRP: alliance auto_leave_pts  >= MOVEMENT_RP_THRESHOLD
@@ -60,7 +61,7 @@ class TeamStats:
 
     @property
     def opr_total(self) -> float:
-        """Total expected score per match, excluding fouls committed."""
+        """Total expected score per match, including expected foul points received."""
         return max(sum(self.cat_mean(c) for c in gc.POSITIVE_CATEGORIES), 0.0)
 
     @property
@@ -213,13 +214,9 @@ class MonteCarloSimulator:
         cats = gc.CATEGORIES
 
         # Pre-allocate arrays: shape (n, M)
-        # Scores before opponent penalties are added
+        # Total scores include foul_pts_received (already in opr_total)
         red_base  = np.zeros((n, M))
         blue_base = np.zeros((n, M))
-
-        # Foul points committed BY each alliance (awarded TO the opponent)
-        red_fouls  = np.zeros((n, M))
-        blue_fouls = np.zeros((n, M))
 
         # RP-threshold category arrays
         red_auto_leave  = np.zeros((n, M))   # for movementRP
@@ -252,15 +249,6 @@ class MonteCarloSimulator:
 
             red_base[:, j]  = self._sample(red_total_mean,  red_total_std)
             blue_base[:, j] = self._sample(blue_total_mean, blue_total_std)
-
-            # ------ Fouls committed (go to opponent) -----------------------
-            r_foul_mean = sum(self.team_stats[t].cat_mean("fouls_committed") for t in R)
-            r_foul_std  = math.sqrt(sum(self.team_stats[t].cat_std("fouls_committed")**2 for t in R))
-            b_foul_mean = sum(self.team_stats[t].cat_mean("fouls_committed") for t in B)
-            b_foul_std  = math.sqrt(sum(self.team_stats[t].cat_std("fouls_committed")**2 for t in B))
-
-            red_fouls[:, j]  = self._sample(r_foul_mean, r_foul_std)
-            blue_fouls[:, j] = self._sample(b_foul_mean, b_foul_std)
 
             # ------ RP threshold categories --------------------------------
             # auto_leave
@@ -337,10 +325,10 @@ class MonteCarloSimulator:
             blue_endgame[:, j] = self._sample(b_eg_mean, b_eg_std)
 
         # ------------------------------------------------------------------
-        # Final scores: base score + OPPONENT fouls (penalties applied correctly)
+        # Final scores: foul_pts_received is already included in opr_total/base
         # ------------------------------------------------------------------
-        red_scores  = red_base  + blue_fouls   # blue fouls → red gets the pts
-        blue_scores = blue_base + red_fouls    # red fouls  → blue gets the pts
+        red_scores  = red_base
+        blue_scores = blue_base
 
         # ------------------------------------------------------------------
         # Bonus RP masks   shape: (n, M)  boolean

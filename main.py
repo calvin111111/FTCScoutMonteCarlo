@@ -6,8 +6,8 @@ Fetches per-match score breakdowns from FTCScout, computes per-category OPR
 using a Kalman filter, and runs Monte Carlo simulations to predict match
 outcomes and final rankings for an FTC event.
 
-Penalty points are applied to the OPPOSING alliance (not the team that commits
-them), matching the actual FTC scoring rules.
+Penalty points are modelled as foul_pts_received — the foul points awarded TO
+an alliance from opponent infractions, matching how scores are reported in FTC.
 
 Bonus RP thresholds (movementRP, goalRP, patternRP) are configurable via
 game_config.py — verify against the official DECODE Competition Manual

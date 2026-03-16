@@ -49,12 +49,12 @@ CATEGORIES = [
     "dc_pattern",       # teleopPatternPoints
     "dc_depot",         # teleopDepotPoints
     "dc_base",          # teleopBasePoints  (robot returns to base)
-    "fouls_committed",  # foulPointsCommitted — committed BY this alliance,
-                        # awarded TO the opponent; modelled separately
+    "foul_pts_received", # foulPointsCommitted by the OPPONENT — awarded TO
+                         # this alliance and included in the reported score
 ]
 
-# Categories that directly contribute to an alliance's own score
-POSITIVE_CATEGORIES = [c for c in CATEGORIES if c != "fouls_committed"]
+# All categories contribute additively to an alliance's own score
+POSITIVE_CATEGORIES = CATEGORIES
 
 # ---------------------------------------------------------------------------
 # Ranking Point (RP) thresholds — Table 10-3
@@ -113,7 +113,7 @@ KALMAN_MEASUREMENT_NOISE: dict[str, float] = {
     "dc_pattern":       36.0,
     "dc_depot":         16.0,
     "dc_base":          36.0,   # some variance in endgame reliability
-    "fouls_committed":  25.0,
+    "foul_pts_received": 25.0,
 }
 
 # Number of Kalman convergence passes (3 is typically sufficient)

@@ -103,23 +103,32 @@ def extract_alliance_breakdown(scores_obj: dict, alliance: str) -> dict | None:
     dc_pattern_pts      = _float("teleopPatternPoints")
     dc_depot_pts        = _float("teleopDepotPoints")
     dc_base_pts         = _float("teleopBasePoints")
-    fouls_committed     = _float("foulPointsCommitted")
+
+    # Foul points RECEIVED = opponent's foulPointsCommitted (additive to our score)
+    opponent = "Blue" if alliance.lower() == "red" else "Red"
+    opp_data = (
+        scores_obj.get(opponent)
+        or scores_obj.get(opponent.lower())
+        or scores_obj.get(opponent.capitalize())
+        or {}
+    )
+    foul_pts_received = float(opp_data.get("foulPointsCommitted") or 0.0)
 
     auto_pts    = auto_leave_pts + auto_classified_pts + auto_overflow_pts + auto_pattern_pts
     endgame_pts = dc_base_pts
 
     return {
         # ---- Kalman categories ----
-        "auto_leave":       auto_leave_pts,
-        "auto_classified":  auto_classified_pts,
-        "auto_overflow":    auto_overflow_pts,
-        "auto_pattern":     auto_pattern_pts,
-        "dc_classified":    dc_classified_pts,
-        "dc_overflow":      dc_overflow_pts,
-        "dc_pattern":       dc_pattern_pts,
-        "dc_depot":         dc_depot_pts,
-        "dc_base":          dc_base_pts,
-        "fouls_committed":  fouls_committed,
+        "auto_leave":        auto_leave_pts,
+        "auto_classified":   auto_classified_pts,
+        "auto_overflow":     auto_overflow_pts,
+        "auto_pattern":      auto_pattern_pts,
+        "dc_classified":     dc_classified_pts,
+        "dc_overflow":       dc_overflow_pts,
+        "dc_pattern":        dc_pattern_pts,
+        "dc_depot":          dc_depot_pts,
+        "dc_base":           dc_base_pts,
+        "foul_pts_received": foul_pts_received,
         # ---- Auxiliary (not Kalman categories) ----
         "_auto_pts":        auto_pts,
         "_endgame_pts":     endgame_pts,
