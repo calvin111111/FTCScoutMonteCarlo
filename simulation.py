@@ -194,10 +194,13 @@ class MonteCarloSimulator:
     # ------------------------------------------------------------------
 
     def _sample(self, mean: float, std: float) -> np.ndarray:
-        """Sample num_simulations values from N(mean, std), floored at 0."""
-        return np.maximum(
-            self.rng.normal(mean, max(std, 0.1), self.num_simulations), 0.0
-        )
+        """Sample num_simulations values from N(mean, std).
+
+        No floor is applied here — negative values are valid OPR statistical
+        artifacts and are handled at comparison/display time.  This avoids an
+        artificial pile-up of zeros that would inflate tie percentages.
+        """
+        return self.rng.normal(mean, max(std, 0.1), self.num_simulations)
 
     # ------------------------------------------------------------------
     # Main simulation
@@ -325,10 +328,15 @@ class MonteCarloSimulator:
             blue_endgame[:, j] = self._sample(b_eg_mean, b_eg_std)
 
         # ------------------------------------------------------------------
-        # Final scores: foul_pts_received is already included in opr_total/base
+        # Final scores: foul_pts_received is already included in opr_total/base.
+        # Round to integers for win/loss/tie comparison — FTC scores are integer
+        # points and rounding eliminates the artificial tie spike that arises from
+        # comparing continuous floats (especially the 0-vs-0 pile at low OPR).
         # ------------------------------------------------------------------
         red_scores  = red_base
         blue_scores = blue_base
+        red_scores_int  = np.round(red_base).astype(int)
+        blue_scores_int = np.round(blue_base).astype(int)
 
         # ------------------------------------------------------------------
         # Bonus RP masks   shape: (n, M)  boolean
@@ -348,21 +356,24 @@ class MonteCarloSimulator:
         # ------------------------------------------------------------------
         match_results: list[MatchResult] = []
         for j, match in enumerate(self.schedule):
-            r = red_scores[:, j]
-            b = blue_scores[:, j]
-            red_wins  = int(np.sum(r > b))
-            blue_wins = int(np.sum(b > r))
+            ri = red_scores_int[:, j]
+            bi = blue_scores_int[:, j]
+            red_wins  = int(np.sum(ri > bi))
+            blue_wins = int(np.sum(bi > ri))
             ties      = n - red_wins - blue_wins
 
+            # Display: clip continuous scores at 0 (scores can't be negative in FTC)
+            r_disp = np.maximum(red_scores[:, j],  0.0)
+            b_disp = np.maximum(blue_scores[:, j], 0.0)
             match_results.append(MatchResult(
                 match=match,
                 red_win_pct   = red_wins  / n * 100,
                 blue_win_pct  = blue_wins / n * 100,
                 tie_pct       = ties      / n * 100,
-                avg_red_score = float(np.mean(r)),
-                avg_blue_score= float(np.mean(b)),
-                std_red_score = float(np.std(r)),
-                std_blue_score= float(np.std(b)),
+                avg_red_score = float(np.mean(r_disp)),
+                avg_blue_score= float(np.mean(b_disp)),
+                std_red_score = float(np.std(r_disp)),
+                std_blue_score= float(np.std(b_disp)),
             ))
 
         # ------------------------------------------------------------------
@@ -377,10 +388,10 @@ class MonteCarloSimulator:
         team_tbp2 = np.zeros((n, len(self.all_teams)))  # cumulative endgame pts
 
         for j, match in enumerate(self.schedule):
-            r   = red_scores[:, j]
-            b   = blue_scores[:, j]
-            rwm = r > b        # red win mask
-            bwm = b > r        # blue win mask
+            ri  = red_scores_int[:, j]
+            bi  = blue_scores_int[:, j]
+            rwm = ri > bi      # red win mask
+            bwm = bi > ri      # blue win mask
             tm  = ~rwm & ~bwm  # tie mask
 
             r_mrp = red_movement_rp[:, j].astype(float)
@@ -397,8 +408,8 @@ class MonteCarloSimulator:
                     + tm.astype(float)
                     + r_mrp + r_grp + r_prp
                 )
-                team_tbp1[:, idx] += red_auto[:, j]
-                team_tbp2[:, idx] += red_endgame[:, j]
+                team_tbp1[:, idx] += np.maximum(red_auto[:, j],  0.0)
+                team_tbp2[:, idx] += np.maximum(red_endgame[:, j], 0.0)
 
             for t in match.blue_teams:
                 idx = team_idx[t]
@@ -407,8 +418,8 @@ class MonteCarloSimulator:
                     + tm.astype(float)
                     + b_mrp + b_grp + b_prp
                 )
-                team_tbp1[:, idx] += blue_auto[:, j]
-                team_tbp2[:, idx] += blue_endgame[:, j]
+                team_tbp1[:, idx] += np.maximum(blue_auto[:, j],  0.0)
+                team_tbp2[:, idx] += np.maximum(blue_endgame[:, j], 0.0)
 
         # Compute ranks per simulation: primary RP, secondary TBP1, tertiary TBP2
         for sim_i in range(n):
@@ -434,10 +445,10 @@ class MonteCarloSimulator:
 
         # Win/loss/tie per team
         for j, match in enumerate(self.schedule):
-            r  = red_scores[:, j]
-            b  = blue_scores[:, j]
-            rw = int(np.sum(r > b))
-            bw = int(np.sum(b > r))
+            ri = red_scores_int[:, j]
+            bi = blue_scores_int[:, j]
+            rw = int(np.sum(ri > bi))
+            bw = int(np.sum(bi > ri))
             ti = n - rw - bw
             for t in match.red_teams:
                 ranking_dists[t].win_count  += rw / n
