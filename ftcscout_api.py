@@ -183,7 +183,8 @@ class FTCScoutAPI:
 
     def get_team_events(self, number: int, season: int) -> list[dict]:
         """Fetch all event participations for a team in a season."""
-        return self._rest_get(f"/teams/{number}/events?season={season}")
+        # The REST endpoint uses /teams/:number/events/:season (path param)
+        return self._rest_get(f"/teams/{number}/events/{season}")
 
     # ------------------------------------------------------------------
     # Bulk fetch with progress — batches teams to minimise requests
