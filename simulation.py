@@ -29,15 +29,18 @@ class TeamStats:
     opr_teleop: float = 0.0
     opr_endgame: float = 0.0
     match_count: int = 0
+    std_dev_override: float | None = None
 
     @property
     def std_dev(self) -> float:
-        """Estimate per-match score standard deviation.
+        """Per-match score standard deviation.
 
-        FTC scores typically have a coefficient of variation around 15-25%.
-        We use 20% of the OPR as a reasonable default. Teams with very few
-        matches get a wider distribution to express greater uncertainty.
+        Uses an empirically derived value (std_dev_override) when available,
+        computed from historical match scores minus partner OPR. Falls back to
+        a fixed coefficient of variation when there is insufficient match data.
         """
+        if self.std_dev_override is not None:
+            return self.std_dev_override
         base_cv = 0.20
         if self.match_count < 5:
             base_cv = 0.30

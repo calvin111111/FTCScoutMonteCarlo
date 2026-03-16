@@ -7,6 +7,7 @@ caching to avoid overwhelming the server.
 """
 
 import json
+import math
 import os
 import time
 import hashlib
@@ -220,6 +221,77 @@ class FTCScoutAPI:
                     results[num] = None
 
         return results
+
+    def compute_team_std_devs(self, team_stats: dict, season: int,
+                              min_matches: int = 3) -> dict[int, float]:
+        """Compute empirical std dev for each team from match-by-match history.
+
+        For each played match, estimates the team's individual contribution as:
+            contribution = alliance_score - partner_OPR
+
+        Subtracting the partner's OPR isolates the team's own scoring variance
+        from the noise introduced by varying partner quality. The std dev of
+        these residuals is used in place of the hardcoded OPR percentage.
+
+        Args:
+            team_stats: Mapping of team number -> TeamStats (needs opr_total).
+            season: FTC season year.
+            min_matches: Minimum played matches required to use empirical std dev.
+                         Teams below this threshold keep the OPR-derived fallback.
+
+        Returns:
+            Mapping of team number -> empirical std dev (only for teams with
+            enough data; others are omitted so the fallback applies).
+        """
+        result = {}
+        for team_num, stats in team_stats.items():
+            matches = self.get_team_matches(team_num, season=season)
+            contributions = []
+            for match in matches:
+                if not match.get("hasBeenPlayed", False):
+                    continue
+
+                teams = match.get("teams", [])
+
+                # Identify this team's alliance and partner
+                my_alliance = None
+                partner_num = None
+                for t in teams:
+                    if t.get("teamNumber") == team_num:
+                        my_alliance = t.get("alliance")
+                        break
+                if my_alliance is None:
+                    continue
+                for t in teams:
+                    if t.get("teamNumber") != team_num and t.get("alliance") == my_alliance:
+                        partner_num = t.get("teamNumber")
+                        break
+                if partner_num is None:
+                    continue
+
+                # Extract alliance total score — try common field layouts
+                alliance_score = None
+                if my_alliance == "Red":
+                    alliance_score = (match.get("redScore")
+                                      or match.get("red_score")
+                                      or (match.get("scores") or {}).get("red", {}).get("totalPoints"))
+                else:
+                    alliance_score = (match.get("blueScore")
+                                      or match.get("blue_score")
+                                      or (match.get("scores") or {}).get("blue", {}).get("totalPoints"))
+                if alliance_score is None:
+                    continue
+
+                partner_opr = team_stats.get(partner_num)
+                partner_opr_val = partner_opr.opr_total if partner_opr else 0.0
+                contributions.append(float(alliance_score) - partner_opr_val)
+
+            if len(contributions) >= min_matches:
+                mean = sum(contributions) / len(contributions)
+                variance = sum((x - mean) ** 2 for x in contributions) / len(contributions)
+                result[team_num] = max(math.sqrt(variance), 5.0)
+
+        return result
 
     def get_event_schedule_and_stats(self, season: int, event_code: str):
         """Convenience: fetch matches + team stats for an event.

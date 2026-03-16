@@ -28,7 +28,12 @@ from output import format_match_predictions, format_rankings
 
 def build_team_stats_from_api(api: FTCScoutAPI, team_numbers: list[int],
                               season: int) -> dict[int, TeamStats]:
-    """Fetch QuickStats for all teams and build TeamStats objects."""
+    """Fetch QuickStats for all teams and build TeamStats objects.
+
+    Also computes empirical per-team standard deviations from match history
+    (alliance score minus partner OPR) and stores them as std_dev_override,
+    replacing the hardcoded OPR percentage fallback for teams with enough data.
+    """
     print(f"Fetching QuickStats for {len(team_numbers)} teams "
           f"(season {season})...")
     raw = api.get_quick_stats_for_teams(team_numbers, season)
@@ -53,6 +58,13 @@ def build_team_stats_from_api(api: FTCScoutAPI, team_numbers: list[int],
         print(f"  Warning: No QuickStats found for {len(missing)} team(s): "
               f"{missing[:10]}{'...' if len(missing) > 10 else ''}")
         print(f"  These teams will use default (0 OPR) values.")
+
+    print(f"Computing empirical std devs from match history...")
+    empirical = api.compute_team_std_devs(stats, season)
+    for num, std_dev in empirical.items():
+        stats[num].std_dev_override = std_dev
+    print(f"  Empirical std dev computed for {len(empirical)}/{len(stats)} teams "
+          f"({len(stats) - len(empirical)} use OPR-derived fallback).")
 
     return stats
 
