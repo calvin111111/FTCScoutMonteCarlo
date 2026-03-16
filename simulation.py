@@ -216,6 +216,19 @@ class MonteCarloSimulator:
         M   = len(self.schedule)
         cats = gc.CATEGORIES
 
+        # ---- Per-team simulation noise correction ----------------------------
+        # The calibrated measurement noise R is derived from alliance-level
+        # residuals (alliance_score − team_opr − partner_opr), so R captures
+        # BOTH teams' match-to-match variability.  When we sample each team
+        # independently and sum them for the alliance total, using the full R
+        # per team would double-count the noise (each team's R already includes
+        # the partner's variability).  Halving R per team gives the correct
+        # total alliance variance: Var(alliance) ≈ var1 + R/2 + var2 + R/2 = var1 + var2 + R.
+        sim_R = {
+            cat: gc.KALMAN_MEASUREMENT_NOISE.get(cat, 25.0) / 2.0
+            for cat in gc.CATEGORIES
+        }
+
         # Pre-allocate arrays: shape (n, M)
         # Total scores include foul_pts_received (already in opr_total)
         red_base  = np.zeros((n, M))
@@ -244,11 +257,19 @@ class MonteCarloSimulator:
             B = match.blue_teams
 
             # ------ Total non-foul score -----------------------------------
-            # Sum means and combine variances across partners
+            # Sum means and combine variances across partners (using sim_R)
             red_total_mean  = sum(self.team_stats[t].opr_total for t in R)
-            red_total_std   = math.sqrt(sum(self.team_stats[t].std_dev**2 for t in R))
+            red_total_var   = sum(
+                self.team_stats[t].cat_std(c, measurement_noise=sim_R[c]) ** 2
+                for t in R for c in gc.POSITIVE_CATEGORIES
+            )
+            red_total_std   = max(math.sqrt(red_total_var), 3.0)
             blue_total_mean = sum(self.team_stats[t].opr_total for t in B)
-            blue_total_std  = math.sqrt(sum(self.team_stats[t].std_dev**2 for t in B))
+            blue_total_var  = sum(
+                self.team_stats[t].cat_std(c, measurement_noise=sim_R[c]) ** 2
+                for t in B for c in gc.POSITIVE_CATEGORIES
+            )
+            blue_total_std  = max(math.sqrt(blue_total_var), 3.0)
 
             red_base[:, j]  = self._sample(red_total_mean,  red_total_std)
             blue_base[:, j] = self._sample(blue_total_mean, blue_total_std)
@@ -256,9 +277,9 @@ class MonteCarloSimulator:
             # ------ RP threshold categories --------------------------------
             # auto_leave
             r_leave_mean = sum(self.team_stats[t].cat_mean("auto_leave") for t in R)
-            r_leave_std  = math.sqrt(sum(self.team_stats[t].cat_std("auto_leave")**2 for t in R))
+            r_leave_std  = math.sqrt(sum(self.team_stats[t].cat_std("auto_leave", measurement_noise=sim_R["auto_leave"])**2 for t in R))
             b_leave_mean = sum(self.team_stats[t].cat_mean("auto_leave") for t in B)
-            b_leave_std  = math.sqrt(sum(self.team_stats[t].cat_std("auto_leave")**2 for t in B))
+            b_leave_std  = math.sqrt(sum(self.team_stats[t].cat_std("auto_leave", measurement_noise=sim_R["auto_leave"])**2 for t in B))
             red_auto_leave[:, j]  = self._sample(r_leave_mean, r_leave_std)
             blue_auto_leave[:, j] = self._sample(b_leave_mean, b_leave_std)
 
@@ -269,8 +290,8 @@ class MonteCarloSimulator:
                 for t in R
             )
             r_class_std = math.sqrt(sum(
-                self.team_stats[t].cat_std("auto_classified")**2
-                + self.team_stats[t].cat_std("dc_classified")**2
+                self.team_stats[t].cat_std("auto_classified", measurement_noise=sim_R["auto_classified"])**2
+                + self.team_stats[t].cat_std("dc_classified", measurement_noise=sim_R["dc_classified"])**2
                 for t in R
             ))
             b_class_mean = sum(
@@ -279,8 +300,8 @@ class MonteCarloSimulator:
                 for t in B
             )
             b_class_std = math.sqrt(sum(
-                self.team_stats[t].cat_std("auto_classified")**2
-                + self.team_stats[t].cat_std("dc_classified")**2
+                self.team_stats[t].cat_std("auto_classified", measurement_noise=sim_R["auto_classified"])**2
+                + self.team_stats[t].cat_std("dc_classified", measurement_noise=sim_R["dc_classified"])**2
                 for t in B
             ))
             red_classified[:, j]  = self._sample(r_class_mean, r_class_std)
@@ -293,8 +314,8 @@ class MonteCarloSimulator:
                 for t in R
             )
             r_pat_std = math.sqrt(sum(
-                self.team_stats[t].cat_std("auto_pattern")**2
-                + self.team_stats[t].cat_std("dc_pattern")**2
+                self.team_stats[t].cat_std("auto_pattern", measurement_noise=sim_R["auto_pattern"])**2
+                + self.team_stats[t].cat_std("dc_pattern", measurement_noise=sim_R["dc_pattern"])**2
                 for t in R
             ))
             b_pat_mean = sum(
@@ -303,8 +324,8 @@ class MonteCarloSimulator:
                 for t in B
             )
             b_pat_std = math.sqrt(sum(
-                self.team_stats[t].cat_std("auto_pattern")**2
-                + self.team_stats[t].cat_std("dc_pattern")**2
+                self.team_stats[t].cat_std("auto_pattern", measurement_noise=sim_R["auto_pattern"])**2
+                + self.team_stats[t].cat_std("dc_pattern", measurement_noise=sim_R["dc_pattern"])**2
                 for t in B
             ))
             red_pattern[:, j]  = self._sample(r_pat_mean, r_pat_std)
@@ -313,17 +334,17 @@ class MonteCarloSimulator:
             # ------ Auto pts for TBP1 ------------------------------------
             auto_cats = ["auto_leave", "auto_classified", "auto_overflow", "auto_pattern"]
             r_auto_mean = sum(self.team_stats[t].cat_mean(c) for t in R for c in auto_cats)
-            r_auto_std  = math.sqrt(sum(self.team_stats[t].cat_std(c)**2 for t in R for c in auto_cats))
+            r_auto_std  = math.sqrt(sum(self.team_stats[t].cat_std(c, measurement_noise=sim_R[c])**2 for t in R for c in auto_cats))
             b_auto_mean = sum(self.team_stats[t].cat_mean(c) for t in B for c in auto_cats)
-            b_auto_std  = math.sqrt(sum(self.team_stats[t].cat_std(c)**2 for t in B for c in auto_cats))
+            b_auto_std  = math.sqrt(sum(self.team_stats[t].cat_std(c, measurement_noise=sim_R[c])**2 for t in B for c in auto_cats))
             red_auto[:, j]  = self._sample(r_auto_mean, r_auto_std)
             blue_auto[:, j] = self._sample(b_auto_mean, b_auto_std)
 
             # ------ Endgame pts for TBP2 ---------------------------------
             r_eg_mean = sum(self.team_stats[t].cat_mean("dc_base") for t in R)
-            r_eg_std  = math.sqrt(sum(self.team_stats[t].cat_std("dc_base")**2 for t in R))
+            r_eg_std  = math.sqrt(sum(self.team_stats[t].cat_std("dc_base", measurement_noise=sim_R["dc_base"])**2 for t in R))
             b_eg_mean = sum(self.team_stats[t].cat_mean("dc_base") for t in B)
-            b_eg_std  = math.sqrt(sum(self.team_stats[t].cat_std("dc_base")**2 for t in B))
+            b_eg_std  = math.sqrt(sum(self.team_stats[t].cat_std("dc_base", measurement_noise=sim_R["dc_base"])**2 for t in B))
             red_endgame[:, j]  = self._sample(r_eg_mean, r_eg_std)
             blue_endgame[:, j] = self._sample(b_eg_mean, b_eg_std)
 
