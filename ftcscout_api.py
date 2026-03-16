@@ -398,23 +398,32 @@ class FTCScoutAPI:
         self,
         team_processed: dict[int, list[dict]],
     ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-        """Derive Kalman prior means, prior variances, and measurement noise R
-        empirically from the collected match breakdowns.
+        """Two-pass empirical calibration of Kalman prior means and measurement noise R.
 
-        Each team's record stores the full ALLIANCE category score for that
-        match (two teams contribute to every observation).  So:
-          - per-team prior mean  ≈ mean(alliance observations) / 2
-          - per-team R           ≈ var(alliance observations)  / 2
+        Pass 1 (rough):
+          - Prior mean  = mean(all alliance category scores) / 2   (per-team average)
+          - Rough R     = var(all alliance category scores)  / 2   (overestimate; mixes
+                          between-team and within-team variance)
+          - prior_var is kept large (≥ 10 × rough_R) so the filter adopts the first
+            observation quickly — this is critical for teams with only 1-2 matches.
 
-        Setting prior_var = R means "my uncertainty about an unknown team's
-        OPR equals the typical match-to-match variability" — a sensible
-        uninformative-but-grounded prior.
+        Pass 2 (residuals):
+          - Run a single-pass Kalman with the rough params to get initial OPR estimates.
+          - Compute per-match residuals:
+                residual = alliance_cat_score − (team_opr_rough + partner_opr_rough)
+            These capture only within-team match-to-match variability, NOT between-team
+            differences.
+          - Final R = var(residuals) per category.  Much smaller than the raw alliance
+            variance, leading to sharper OPR estimates and differentiated match
+            win-probability predictions.
 
-        Falls back to game_config defaults for any category with < 10 observations.
+        Falls back to game_config defaults for any category with fewer than 10 observations.
         """
         from collections import defaultdict
-        import math as _math
 
+        # ------------------------------------------------------------------ #
+        # Pass 1: raw prior means and rough R from alliance observations       #
+        # ------------------------------------------------------------------ #
         cat_obs: dict[str, list[float]] = defaultdict(list)
         for records in team_processed.values():
             for record in records:
@@ -422,36 +431,93 @@ class FTCScoutAPI:
                 for cat in gc.CATEGORIES:
                     cat_obs[cat].append(float(bd.get(cat, 0.0)))
 
-        prior_mean: dict[str, float] = {}
-        prior_var:  dict[str, float] = {}
-        meas_noise: dict[str, float] = {}
+        n_obs = len(next(iter(cat_obs.values()), []))
+        if n_obs < 10:
+            # Not enough data — use game_config defaults unchanged
+            return (
+                gc.KALMAN_PRIOR_MEAN.copy(),
+                gc.KALMAN_PRIOR_VAR.copy(),
+                gc.KALMAN_MEASUREMENT_NOISE.copy(),
+            )
 
-        calibrated: list[str] = []
+        rough_prior_mean: dict[str, float] = {}
+        rough_R: dict[str, float] = {}
         for cat in gc.CATEGORIES:
             obs = cat_obs[cat]
-            if len(obs) >= 10:
-                mu  = sum(obs) / len(obs)
-                var = sum((x - mu) ** 2 for x in obs) / len(obs)
-                per_team_mean = mu  / 2
-                per_team_var  = max(var / 2, 0.5)
-                prior_mean[cat] = per_team_mean
-                prior_var[cat]  = per_team_var   # start as uncertain as one match
-                meas_noise[cat] = per_team_var
-                calibrated.append(cat)
+            mu  = sum(obs) / len(obs)
+            var = sum((x - mu) ** 2 for x in obs) / len(obs)
+            rough_prior_mean[cat] = mu / 2           # per-team average
+            rough_R[cat]          = max(var / 2, 1.0)  # overestimate OK here
+
+        # Keep prior_var large so new observations dominate quickly
+        rough_prior_var = {
+            cat: max(gc.KALMAN_PRIOR_VAR[cat], 10.0 * rough_R[cat])
+            for cat in gc.CATEGORIES
+        }
+
+        # ------------------------------------------------------------------ #
+        # Rough single-pass Kalman → initial OPR estimates                    #
+        # ------------------------------------------------------------------ #
+        rough_states = compute_kalman_opr(
+            team_processed,
+            prior_mean=rough_prior_mean,
+            prior_var=rough_prior_var,
+            measurement_noise=rough_R,
+            num_passes=1,
+        )
+
+        # ------------------------------------------------------------------ #
+        # Pass 2: compute per-match residuals, derive final R                 #
+        # ------------------------------------------------------------------ #
+        cat_residuals: dict[str, list[float]] = defaultdict(list)
+        for team_num, records in team_processed.items():
+            team_s = rough_states.get(team_num, {})
+            for record in records:
+                partner_num = record["_partner_num"]
+                partner_s   = rough_states.get(partner_num, {})
+                bd          = record["_breakdown"]
+                for cat in gc.CATEGORIES:
+                    t_est = team_s.get(cat)
+                    p_est = partner_s.get(cat)
+                    if t_est is None or p_est is None:
+                        continue
+                    residual = float(bd.get(cat, 0.0)) - (t_est.mean + p_est.mean)
+                    cat_residuals[cat].append(residual)
+
+        final_R: dict[str, float] = {}
+        for cat in gc.CATEGORIES:
+            res = cat_residuals.get(cat, [])
+            if len(res) >= 10:
+                mu  = sum(res) / len(res)
+                var = sum((x - mu) ** 2 for x in res) / len(res)
+                final_R[cat] = max(var, 0.25)
             else:
-                prior_mean[cat] = gc.KALMAN_PRIOR_MEAN[cat]
-                prior_var[cat]  = gc.KALMAN_PRIOR_VAR[cat]
-                meas_noise[cat] = gc.KALMAN_MEASUREMENT_NOISE[cat]
+                final_R[cat] = rough_R[cat]
 
-        if calibrated:
-            n_obs = len(next(iter(cat_obs.values()), []))
-            print(f"  Calibrated Kalman params from {n_obs} alliance observations:")
-            print(f"  {'Category':<20} {'Prior μ':>8} {'R (σ²)':>8}")
-            print(f"  {'-'*20}  {'-'*7}  {'-'*7}")
-            for cat in gc.CATEGORIES:
-                print(f"  {cat:<20} {prior_mean[cat]:>8.2f} {meas_noise[cat]:>8.2f}")
+        # prior_var must stay large relative to final R for fast adaptation
+        final_prior_var = {
+            cat: max(gc.KALMAN_PRIOR_VAR[cat], 10.0 * final_R[cat])
+            for cat in gc.CATEGORIES
+        }
 
-        return prior_mean, prior_var, meas_noise
+        # ------------------------------------------------------------------ #
+        # Print calibration summary                                            #
+        # ------------------------------------------------------------------ #
+        print(f"  Two-pass Kalman calibration from {n_obs} alliance observations:")
+        print(f"  {'Category':<20} {'Prior μ':>8} {'R':>8} {'sqrt(R)':>8}")
+        print(f"  {'-' * 48}")
+        for cat in gc.CATEGORIES:
+            print(
+                f"  {cat:<20} {rough_prior_mean[cat]:>8.2f}"
+                f" {final_R[cat]:>8.2f} {math.sqrt(final_R[cat]):>8.2f}"
+            )
+
+        # Propagate calibrated R to gc.KALMAN_MEASUREMENT_NOISE so that
+        # TeamStats.cat_std (used by the Monte Carlo simulator) draws on the
+        # empirical values rather than the hardcoded game_config defaults.
+        gc.KALMAN_MEASUREMENT_NOISE.update(final_R)
+
+        return rough_prior_mean, final_prior_var, final_R
 
     def get_event_schedule_and_stats(self, season: int, event_code: str):
         """Convenience: fetch matches + team stats for an event.
