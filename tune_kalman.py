@@ -324,12 +324,12 @@ def write_game_config(
     q_frac:    float,
     pv_factor: float,
 ) -> None:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         text = f.read()
     text = _replace_constant(text, "KALMAN_TUNED_R_RATIO",          r_ratio)
     text = _replace_constant(text, "KALMAN_TUNED_Q_FRACTION",       q_frac)
     text = _replace_constant(text, "KALMAN_TUNED_PRIOR_VAR_FACTOR", pv_factor)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
 
