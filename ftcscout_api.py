@@ -384,7 +384,74 @@ class FTCScoutAPI:
                 # still gets prior-based states in the output dict.
                 team_processed[team_num] = []
 
-        return compute_kalman_opr(team_processed)
+        prior_mean, prior_var, meas_noise = self._calibrate_kalman_params(
+            team_processed
+        )
+        return compute_kalman_opr(
+            team_processed,
+            prior_mean=prior_mean,
+            prior_var=prior_var,
+            measurement_noise=meas_noise,
+        )
+
+    def _calibrate_kalman_params(
+        self,
+        team_processed: dict[int, list[dict]],
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+        """Derive Kalman prior means, prior variances, and measurement noise R
+        empirically from the collected match breakdowns.
+
+        Each team's record stores the full ALLIANCE category score for that
+        match (two teams contribute to every observation).  So:
+          - per-team prior mean  ≈ mean(alliance observations) / 2
+          - per-team R           ≈ var(alliance observations)  / 2
+
+        Setting prior_var = R means "my uncertainty about an unknown team's
+        OPR equals the typical match-to-match variability" — a sensible
+        uninformative-but-grounded prior.
+
+        Falls back to game_config defaults for any category with < 10 observations.
+        """
+        from collections import defaultdict
+        import math as _math
+
+        cat_obs: dict[str, list[float]] = defaultdict(list)
+        for records in team_processed.values():
+            for record in records:
+                bd = record["_breakdown"]
+                for cat in gc.CATEGORIES:
+                    cat_obs[cat].append(float(bd.get(cat, 0.0)))
+
+        prior_mean: dict[str, float] = {}
+        prior_var:  dict[str, float] = {}
+        meas_noise: dict[str, float] = {}
+
+        calibrated: list[str] = []
+        for cat in gc.CATEGORIES:
+            obs = cat_obs[cat]
+            if len(obs) >= 10:
+                mu  = sum(obs) / len(obs)
+                var = sum((x - mu) ** 2 for x in obs) / len(obs)
+                per_team_mean = mu  / 2
+                per_team_var  = max(var / 2, 0.5)
+                prior_mean[cat] = per_team_mean
+                prior_var[cat]  = per_team_var   # start as uncertain as one match
+                meas_noise[cat] = per_team_var
+                calibrated.append(cat)
+            else:
+                prior_mean[cat] = gc.KALMAN_PRIOR_MEAN[cat]
+                prior_var[cat]  = gc.KALMAN_PRIOR_VAR[cat]
+                meas_noise[cat] = gc.KALMAN_MEASUREMENT_NOISE[cat]
+
+        if calibrated:
+            n_obs = len(next(iter(cat_obs.values()), []))
+            print(f"  Calibrated Kalman params from {n_obs} alliance observations:")
+            print(f"  {'Category':<20} {'Prior μ':>8} {'R (σ²)':>8}")
+            print(f"  {'-'*20}  {'-'*7}  {'-'*7}")
+            for cat in gc.CATEGORIES:
+                print(f"  {cat:<20} {prior_mean[cat]:>8.2f} {meas_noise[cat]:>8.2f}")
+
+        return prior_mean, prior_var, meas_noise
 
     def get_event_schedule_and_stats(self, season: int, event_code: str):
         """Convenience: fetch matches + team stats for an event.
