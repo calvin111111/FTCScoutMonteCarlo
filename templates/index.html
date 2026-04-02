@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FTC Monte Carlo Match Predictor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+        }
+        .container { max-width: 700px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            font-size: 1.8rem;
+            margin-bottom: 0.5rem;
+            color: #38bdf8;
+        }
+        .subtitle {
+            text-align: center;
+            color: #94a3b8;
+            margin-bottom: 2rem;
+            font-size: 0.95rem;
+        }
+        .card {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 2rem;
+            border: 1px solid #334155;
+        }
+        .errors {
+            background: #7f1d1d;
+            border: 1px solid #dc2626;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .errors p { color: #fca5a5; margin: 0.25rem 0; }
+        .form-group { margin-bottom: 1.5rem; }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.4rem;
+            color: #cbd5e1;
+            font-size: 0.9rem;
+        }
+        .hint {
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-bottom: 0.4rem;
+        }
+        input[type="text"], input[type="number"], textarea, select {
+            width: 100%;
+            padding: 0.6rem 0.8rem;
+            background: #0f172a;
+            border: 1px solid #475569;
+            border-radius: 6px;
+            color: #e2e8f0;
+            font-size: 0.95rem;
+            font-family: inherit;
+        }
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #38bdf8;
+            box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+        }
+        textarea { resize: vertical; min-height: 100px; font-family: monospace; }
+        .row { display: flex; gap: 1rem; }
+        .row .form-group { flex: 1; }
+        .divider {
+            text-align: center;
+            color: #64748b;
+            margin: 0.5rem 0;
+            font-weight: 600;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .checkbox-group input { width: auto; }
+        .checkbox-group label { margin: 0; }
+        button[type="submit"] {
+            width: 100%;
+            padding: 0.8rem;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.05rem;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 0.5rem;
+        }
+        button[type="submit"]:hover { background: #1d4ed8; }
+        .note {
+            text-align: center;
+            margin-top: 1.5rem;
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FTC Monte Carlo Predictor</h1>
+        <p class="subtitle">DECODE 2025-2026 Match &amp; Ranking Predictions</p>
+
+        <div class="card">
+            {% if errors %}
+            <div class="errors">
+                {% for e in errors %}
+                <p>{{ e }}</p>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <form method="POST" action="/">
+                <div class="form-group">
+                    <label for="season">Season Year</label>
+                    <input type="number" id="season" name="season"
+                           value="{{ season|default('2025') }}" min="2019" max="2030">
+                </div>
+
+                <div class="form-group">
+                    <label for="event_code">Event Code</label>
+                    <div class="hint">FTCScout event code (e.g. NJCMP, USMOTC, USNCMP2DV2)</div>
+                    <input type="text" id="event_code" name="event_code"
+                           value="{{ event_code|default('') }}"
+                           placeholder="e.g. NJCMP">
+                </div>
+
+                <div class="divider">&mdash; OR &mdash;</div>
+
+                <div class="form-group">
+                    <label for="csv_schedule">CSV Schedule</label>
+                    <div class="hint">Format: match_id,match_name,red1,red2,blue1,blue2</div>
+                    <textarea id="csv_schedule" name="csv_schedule"
+                              placeholder="1,Q-1,16461,7244,11115,8393&#10;2,Q-2,9971,14203,16461,5484">{{ csv_schedule|default('') }}</textarea>
+                </div>
+
+                <div class="row">
+                    <div class="form-group">
+                        <label for="event_type">Event Type</label>
+                        <select id="event_type" name="event_type">
+                            <option value="qualifier" {% if event_type|default('qualifier') == 'qualifier' %}selected{% endif %}>Qualifier</option>
+                            <option value="regional" {% if event_type|default('') == 'regional' %}selected{% endif %}>Regional Championship</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="num_sims">Simulations</label>
+                        <input type="number" id="num_sims" name="num_sims"
+                               value="{{ num_sims|default('10000') }}"
+                               min="100" max="100000">
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="form-group">
+                        <label for="seed">Random Seed (optional)</label>
+                        <input type="number" id="seed" name="seed"
+                               value="{{ seed|default('') }}"
+                               placeholder="e.g. 42">
+                    </div>
+                    <div class="form-group" style="display: flex; align-items: flex-end; padding-bottom: 0.2rem;">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="show_rankings" name="show_rankings"
+                                   {% if show_rankings is not defined or show_rankings %}checked{% endif %}>
+                            <label for="show_rankings">Show Rankings</label>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit">Run Simulation</button>
+            </form>
+        </div>
+
+        <p class="note">
+            Runs entirely server-side &mdash; no JavaScript required.<br>
+            Powered by Kalman filter OPR + Monte Carlo simulation.
+        </p>
+    </div>
+</body>
+</html>

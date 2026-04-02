@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Results — FTC Monte Carlo Predictor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+        }
+        .container { max-width: 1100px; margin: 0 auto; }
+        h1 { color: #38bdf8; font-size: 1.6rem; margin-bottom: 0.3rem; }
+        h2 { color: #38bdf8; font-size: 1.2rem; margin: 2rem 0 0.8rem; }
+        .info {
+            color: #94a3b8;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+        .back-link {
+            display: inline-block;
+            color: #38bdf8;
+            text-decoration: none;
+            margin-bottom: 1.5rem;
+            font-size: 0.95rem;
+        }
+        .back-link:hover { text-decoration: underline; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1e293b;
+            border-radius: 8px;
+            overflow: hidden;
+            font-size: 0.88rem;
+        }
+        th {
+            background: #334155;
+            color: #cbd5e1;
+            font-weight: 600;
+            text-align: left;
+            padding: 0.6rem 0.7rem;
+            white-space: nowrap;
+        }
+        td {
+            padding: 0.5rem 0.7rem;
+            border-top: 1px solid #334155;
+        }
+        tr:hover td { background: #263348; }
+        .red { color: #f87171; }
+        .blue { color: #60a5fa; }
+        .pct-bar {
+            display: inline-block;
+            height: 8px;
+            border-radius: 4px;
+            vertical-align: middle;
+        }
+        .pct-bar.red-bar { background: #ef4444; }
+        .pct-bar.blue-bar { background: #3b82f6; }
+        .pct-bar.tie-bar { background: #6b7280; }
+        .pct-cell { white-space: nowrap; }
+        .score { font-family: monospace; }
+        .rank-num { font-weight: 700; color: #fbbf24; }
+        .note {
+            text-align: center;
+            margin-top: 2rem;
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+        .rerun-form {
+            margin-top: 2rem;
+            text-align: center;
+        }
+        .rerun-form button {
+            padding: 0.6rem 1.5rem;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+        .rerun-form button:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a class="back-link" href="/">&larr; New Simulation</a>
+        <h1>Simulation Results</h1>
+        <p class="info">{{ info }}</p>
+
+        <h2>Match Predictions</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Match</th>
+                    <th>Red Teams</th>
+                    <th>Blue Teams</th>
+                    <th>Red Win%</th>
+                    <th>Blue Win%</th>
+                    <th>Tie%</th>
+                    <th>Avg Red</th>
+                    <th>Avg Blue</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in match_results %}
+                <tr>
+                    <td>{{ r.match.match_name }}</td>
+                    <td class="red">{{ r.match.red_teams|join(', ') }}</td>
+                    <td class="blue">{{ r.match.blue_teams|join(', ') }}</td>
+                    <td class="pct-cell">
+                        <span class="pct-bar red-bar" style="width: {{ (r.red_win_pct * 0.6)|round|int }}px;"></span>
+                        {{ "%.1f"|format(r.red_win_pct) }}%
+                    </td>
+                    <td class="pct-cell">
+                        <span class="pct-bar blue-bar" style="width: {{ (r.blue_win_pct * 0.6)|round|int }}px;"></span>
+                        {{ "%.1f"|format(r.blue_win_pct) }}%
+                    </td>
+                    <td class="pct-cell">
+                        <span class="pct-bar tie-bar" style="width: {{ (r.tie_pct * 0.6)|round|int }}px;"></span>
+                        {{ "%.1f"|format(r.tie_pct) }}%
+                    </td>
+                    <td class="score">{{ "%.0f"|format(r.avg_red_score) }} &plusmn;{{ "%.0f"|format(r.std_red_score) }}</td>
+                    <td class="score">{{ "%.0f"|format(r.avg_blue_score) }} &plusmn;{{ "%.0f"|format(r.std_blue_score) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if show_rankings and rankings %}
+        <h2>Predicted Rankings</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Rank</th>
+                    <th>Team</th>
+                    <th>Avg RP</th>
+                    <th>Avg TBP</th>
+                    <th>W</th>
+                    <th>L</th>
+                    <th>T</th>
+                    <th>Top 4%</th>
+                    <th>Rank Distribution</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in rankings %}
+                <tr>
+                    <td class="rank-num">#{{ r.pred_rank }}</td>
+                    <td>{{ r.number }}</td>
+                    <td>{{ r.avg_rp }}</td>
+                    <td>{{ r.avg_tbp }}</td>
+                    <td>{{ r.wins }}</td>
+                    <td>{{ r.losses }}</td>
+                    <td>{{ r.ties }}</td>
+                    <td>{{ r.top4_pct }}</td>
+                    <td>{{ r.rank_dist }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        <form class="rerun-form" method="POST" action="/">
+            <input type="hidden" name="season" value="{{ season }}">
+            <input type="hidden" name="event_code" value="{{ event_code }}">
+            <input type="hidden" name="csv_schedule" value="{{ csv_schedule }}">
+            <input type="hidden" name="num_sims" value="{{ num_sims }}">
+            <input type="hidden" name="seed" value="{{ seed }}">
+            <input type="hidden" name="event_type" value="{{ event_type }}">
+            {% if show_rankings %}
+            <input type="hidden" name="show_rankings" value="on">
+            {% endif %}
+            <button type="submit">Re-run Simulation</button>
+        </form>
+
+        <p class="note">All computation runs server-side. No JavaScript used.</p>
+    </div>
+</body>
+</html>
